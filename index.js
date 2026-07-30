@@ -7,6 +7,11 @@ const os = require('os');
 const app = express();
 const upload = multer({ dest: os.tmpdir() });
 
+app.get('/', (req, res) => {
+  res.status(200).send('FFmpeg service is running');
+});
+
+
 app.post('/process', upload.fields([
   { name: 'video', maxCount: 1 },
   { name: 'srt', maxCount: 1 }   // необязательно
