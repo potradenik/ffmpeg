@@ -119,3 +119,22 @@ app.post('/process', upload.fields([
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server on port ${PORT}`));
+
+app.get('/test-font', (req, res) => {
+  const fontPath = '/app/TT.ttf';
+  const outputPath = path.join(os.tmpdir(), 'test.mp4');
+  const vf = `drawtext=fontfile='${fontPath}':text='TEST':fontsize=40:fontcolor=red:x=10:y=10`;
+
+  const args = [
+    '-f', 'lavfi', '-i', 'color=c=black:s=320x240:d=5',
+    '-vf', vf,
+    '-t', '5', outputPath
+  ];
+
+  execFile(ffmpegPath, args, { timeout: 10000 }, (err, stdout, stderr) => {
+    if (err) {
+      return res.status(500).json({ error: 'Test failed', stderr: stderr.slice(-300) });
+    }
+    res.sendFile(outputPath, () => fs.unlink(outputPath, () => {}));
+  });
+});
