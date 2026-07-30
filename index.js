@@ -8,7 +8,7 @@ const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 const app = express();
 const upload = multer({ dest: os.tmpdir() });
 
-// Создаём виртуальный fonts.conf, который заставит fontconfig искать шрифты только в указанной папке
+// Создаём fonts.conf, который будет искать шрифты в /app (где лежит TT.ttf)
 function createFontsConfig(fontDir) {
   return `<?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
@@ -37,7 +37,6 @@ app.post('/process', upload.fields([
     const outputPath = path.join(os.tmpdir(), 'output.mp4');
     let srtPath = null;
 
-    // Получаем субтитры (либо файл, либо текст)
     if (req.files?.srt?.[0]) {
       srtPath = req.files.srt[0].path;
     } else if (req.body?.srt_text) {
@@ -45,18 +44,15 @@ app.post('/process', upload.fields([
       fs.writeFileSync(srtPath, req.body.srt_text, 'utf-8');
     }
 
-    // Базовый фильтр зеркалирования и масштабирования
     let vf = 'hflip,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2';
 
-    // Готовим временный fonts.conf, если есть субтитры
     let fontsConfPath = null;
     if (srtPath) {
-      const fontDir = path.dirname('/app/TT.ttf'); // /app
+      const fontDir = path.dirname('/app/TT.ttf');
       const fontsConfContent = createFontsConfig(fontDir);
       fontsConfPath = path.join(os.tmpdir(), 'fonts.conf');
       fs.writeFileSync(fontsConfPath, fontsConfContent);
 
-      // 👇 ВАША СТРОКА С НАСТРОЙКАМИ СУБТИТРОВ 👇
       vf += `,subtitles=${srtPath}:force_style='Fontsize=22,PrimaryColour=&HFFFFFF&,Alignment=2,MarginV=40'`;
     }
 
@@ -70,14 +66,15 @@ app.post('/process', upload.fields([
       outputPath
     ];
 
-    // Копируем fonts.conf в /etc/fonts/local.conf, чтобы fontconfig его увидел
+    // Готовим окружение: указываем FONTCONFIG_PATH на /tmp, где лежит fonts.conf
+    const env = { ...process.env };
     if (fontsConfPath) {
-      fs.copyFileSync(fontsConfPath, '/etc/fonts/local.conf');
+      env.FONTCONFIG_PATH = os.tmpdir();   // /tmp
     }
 
     console.log('FFmpeg command:', args.join(' '));
 
-    execFile(ffmpegPath, args, { timeout: 120000 }, (err, stdout, stderr) => {
+    execFile(ffmpegPath, args, { timeout: 120000, env }, (err, stdout, stderr) => {
       // Очистка временных файлов
       fs.unlink(inputPath, () => {});
       if (srtPath && srtPath !== (req.files?.srt?.[0]?.path)) fs.unlink(srtPath, () => {});
