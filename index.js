@@ -40,15 +40,18 @@ app.post('/process', upload.fields([
   const args = [
     '-y', '-i', inputPath,
     '-vf', vf,
-    '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+    '-c:v', 'libx264',
+    '-preset', 'ultrafast',   // максимальная скорость
+    '-crf', '28',             // чуть выше степень сжатия, быстрее
     '-c:a', 'aac', '-b:a', '128k',
+    '-movflags', '+faststart',
+    '-threads', '0',          // использовать все доступные ядра
     outputPath
   ];
 
   console.log('FFmpeg command:', ffmpegPath, args.join(' '));
 
   execFile(ffmpegPath, args, { timeout: 120000 }, (err, stdout, stderr) => {
-    // Очистка временных файлов
     fs.unlink(inputPath, () => {});
     if (srtPath && srtPath !== (req.files?.srt?.[0]?.path)) {
       fs.unlink(srtPath, () => {});
@@ -61,15 +64,13 @@ app.post('/process', upload.fields([
         error: 'FFmpeg processing failed',
         code: err.code,
         signal: err.signal,
-        stderr: stderr // вернём весь stderr (можно обрезать, если слишком длинный)
+        stderr: stderr ? stderr.slice(-1000) : err.message
       });
     }
 
     console.log('FFmpeg finished successfully');
     res.sendFile(outputPath, (sendErr) => {
-      if (sendErr) {
-        console.error('Error sending file:', sendErr);
-      }
+      if (sendErr) console.error('Error sending file:', sendErr);
       fs.unlink(outputPath, () => {});
     });
   });
