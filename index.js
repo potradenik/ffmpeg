@@ -39,7 +39,7 @@ app.post('/process', upload.fields([
     if (srtPath) {
       const fontPath = '/app/TT.ttf';  // шрифт должен лежать в корне репозитория
       if (fs.existsSync(fontPath)) {
-        vf += `,subtitles=${srtPath}:force_style='Fontsize=20,PrimaryColour=&H00FFFF&,Fontfile=${fontPath}'`;
+        vf += `,subtitles=${srtPath}:force_style='Fontsize=20,PrimaryColour=&H00FFFF&'`;
       } else {
         // Если шрифт не найден – возвращаем понятную ошибку
         return res.status(500).json({
