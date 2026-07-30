@@ -4,6 +4,7 @@ const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 const app = express();
 const upload = multer({ dest: os.tmpdir() });
 
@@ -11,10 +12,9 @@ app.get('/', (req, res) => {
   res.status(200).send('FFmpeg service is running');
 });
 
-
 app.post('/process', upload.fields([
   { name: 'video', maxCount: 1 },
-  { name: 'srt', maxCount: 1 }   // необязательно
+  { name: 'srt', maxCount: 1 }
 ]), (req, res) => {
   const videoFile = req.files?.video?.[0];
   if (!videoFile) {
@@ -23,9 +23,15 @@ app.post('/process', upload.fields([
 
   const inputPath = videoFile.path;
   const outputPath = path.join(os.tmpdir(), 'output.mp4');
-  const srtPath = req.files?.srt?.[0]?.path || null;
+  let srtPath = null;
 
-  // Фильтры FFmpeg
+  if (req.files?.srt?.[0]) {
+    srtPath = req.files.srt[0].path;
+  } else if (req.body?.srt_text) {
+    srtPath = path.join(os.tmpdir(), 'subs.srt');
+    fs.writeFileSync(srtPath, req.body.srt_text, 'utf-8');
+  }
+
   let vf = 'hflip,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2';
   if (srtPath) {
     vf += `,subtitles=${srtPath}:force_style='Fontsize=20,PrimaryColour=&H00FFFF&'`;
@@ -39,14 +45,18 @@ app.post('/process', upload.fields([
     outputPath
   ];
 
-  execFile('ffmpeg', args, (err) => {
-    // Очистка временных файлов
+  execFile(ffmpegPath, args, (err, stdout, stderr) => {
     fs.unlink(inputPath, () => {});
-    if (srtPath) fs.unlink(srtPath, () => {});
+    if (srtPath && srtPath !== (req.files?.srt?.[0]?.path)) {
+      fs.unlink(srtPath, () => {});
+    }
 
     if (err) {
-      console.error(err);
-      return res.status(500).json({ error: 'FFmpeg processing failed' });
+      console.error('FFmpeg stderr:', stderr);
+      return res.status(500).json({
+        error: 'FFmpeg processing failed',
+        details: stderr ? stderr.slice(-500) : err.message
+      });
     }
 
     res.sendFile(outputPath, () => {
