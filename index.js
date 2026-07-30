@@ -45,21 +45,31 @@ app.post('/process', upload.fields([
     outputPath
   ];
 
-  execFile(ffmpegPath, args, (err, stdout, stderr) => {
+  console.log('FFmpeg command:', ffmpegPath, args.join(' '));
+
+  execFile(ffmpegPath, args, { timeout: 120000 }, (err, stdout, stderr) => {
+    // Очистка временных файлов
     fs.unlink(inputPath, () => {});
     if (srtPath && srtPath !== (req.files?.srt?.[0]?.path)) {
       fs.unlink(srtPath, () => {});
     }
 
     if (err) {
-      console.error('FFmpeg stderr:', stderr);
+      console.error('FFmpeg error:', err.message);
+      console.error('FFmpeg stderr:\n', stderr);
       return res.status(500).json({
         error: 'FFmpeg processing failed',
-        details: stderr ? stderr.slice(-500) : err.message
+        code: err.code,
+        signal: err.signal,
+        stderr: stderr // вернём весь stderr (можно обрезать, если слишком длинный)
       });
     }
 
-    res.sendFile(outputPath, () => {
+    console.log('FFmpeg finished successfully');
+    res.sendFile(outputPath, (sendErr) => {
+      if (sendErr) {
+        console.error('Error sending file:', sendErr);
+      }
       fs.unlink(outputPath, () => {});
     });
   });
