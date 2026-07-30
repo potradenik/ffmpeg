@@ -10,43 +10,80 @@ const upload = multer({ dest: os.tmpdir() });
 
 app.get('/', (req, res) => res.send('FFmpeg service is running'));
 
+// Функция парсинга SRT в массив субтитров
+function parseSRT(srtText) {
+  const blocks = srtText.trim().split(/\n\n+/);
+  const subtitles = [];
+  for (const block of blocks) {
+    const lines = block.split('\n');
+    if (lines.length >= 3) {
+      const timeLine = lines[1];
+      const match = timeLine.match(/(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})/);
+      if (match) {
+        const start = match[1];
+        const end = match[2];
+        const text = lines.slice(2).join(' ').replace(/'/g, "'\\''");
+        subtitles.push({ start, end, text });
+      }
+    }
+  }
+  return subtitles;
+}
+
+// Конвертация времени SRT в секунды
+function srtTimeToSeconds(timeStr) {
+  const [h, m, sec] = timeStr.split(':');
+  const [s, ms] = sec.split(',');
+  return parseInt(h) * 3600 + parseInt(m) * 60 + parseInt(s) + parseInt(ms) / 1000;
+}
+
 app.post('/process', upload.fields([
   { name: 'video', maxCount: 1 },
   { name: 'srt', maxCount: 1 }
 ]), (req, res) => {
   try {
     const videoFile = req.files?.video?.[0];
-    if (!videoFile) {
-      return res.status(400).json({ error: 'No video file' });
-    }
+    if (!videoFile) return res.status(400).json({ error: 'No video file' });
 
     const inputPath = videoFile.path;
     const outputPath = path.join(os.tmpdir(), 'output.mp4');
-    let srtPath = null;
+    let srtText = null;
 
-    // Получаем субтитры (либо файл, либо текст)
+    // Получаем SRT текст
     if (req.files?.srt?.[0]) {
-      srtPath = req.files.srt[0].path;
+      srtText = fs.readFileSync(req.files.srt[0].path, 'utf-8');
     } else if (req.body?.srt_text) {
-      srtPath = path.join(os.tmpdir(), 'subs.srt');
-      fs.writeFileSync(srtPath, req.body.srt_text, 'utf-8');
+      srtText = req.body.srt_text;
     }
 
-    // Базовый фильтр зеркалирования и масштабирования
+    // Базовый фильтр
     let vf = 'hflip,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2';
 
-    // Если субтитры есть, добавляем их в фильтр с указанием шрифта
-    if (srtPath) {
-      const fontPath = '/app/TT.ttf';  // шрифт должен лежать в корне репозитория
-      if (fs.existsSync(fontPath)) {
-        vf += `,subtitles=${srtPath}:force_style='Fontsize=20,PrimaryColour=&H00FFFF&'`;
-      } else {
-        // Если шрифт не найден – возвращаем понятную ошибку
-        return res.status(500).json({
-          error: 'Font file not found',
-          expectedPath: fontPath
-        });
+    // Если есть субтитры, добавляем drawtext
+    if (srtText) {
+      const fontPath = '/app/TT.ttf';
+      if (!fs.existsSync(fontPath)) {
+        return res.status(500).json({ error: 'Font file not found', path: fontPath });
       }
+
+      const subtitles = parseSRT(srtText);
+      if (subtitles.length === 0) {
+        return res.status(400).json({ error: 'No valid subtitles found in SRT' });
+      }
+
+      // Строим фильтры drawtext для каждой реплики
+      const drawtextFilters = subtitles.map(sub => {
+        const startSec = srtTimeToSeconds(sub.start);
+        const endSec = srtTimeToSeconds(sub.end);
+        // Экранируем двоеточия и другие спецсимволы для параметров фильтра
+        const escapedText = sub.text
+          .replace(/\\/g, '\\\\')
+          .replace(/:/g, '\\:')
+          .replace(/'/g, "'\\''");
+        return `drawtext=fontfile='${fontPath}':text='${escapedText}':fontsize=20:fontcolor=Yellow:enable='between(t,${startSec},${endSec})'`;
+      });
+
+      vf += ',' + drawtextFilters.join(',');
     }
 
     const args = [
@@ -59,35 +96,26 @@ app.post('/process', upload.fields([
       outputPath
     ];
 
-    console.log('FFmpeg command:', ffmpegPath, args.join(' '));
+    console.log('FFmpeg args:', args.join(' '));
 
     execFile(ffmpegPath, args, { timeout: 120000 }, (err, stdout, stderr) => {
-      // Очистка временных файлов
       fs.unlink(inputPath, () => {});
-      if (srtPath && srtPath !== (req.files?.srt?.[0]?.path)) {
-        fs.unlink(srtPath, () => {});
-      }
+      if (srtText && req.files?.srt?.[0]) fs.unlink(req.files.srt[0].path, () => {});
 
       if (err) {
-        console.error('FFmpeg error:', err.message);
-        console.error('FFmpeg stderr:', stderr);
-        return res.status(500).json({
-          error: 'FFmpeg processing failed',
-          details: stderr ? stderr.slice(-500) : err.message
-        });
+        console.error('FFmpeg error:', stderr);
+        return res.status(500).json({ error: 'FFmpeg failed', details: stderr?.slice(-500) });
       }
-
-      console.log('FFmpeg finished successfully');
       res.sendFile(outputPath, (sendErr) => {
-        if (sendErr) console.error('Error sending file:', sendErr);
+        if (sendErr) console.error('Send error:', sendErr);
         fs.unlink(outputPath, () => {});
       });
     });
   } catch (e) {
-    console.error('Unexpected error:', e);
-    res.status(500).json({ error: e.message, stack: e.stack });
+    console.error(e);
+    res.status(500).json({ error: e.message });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`FFmpeg service on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server on port ${PORT}`));
