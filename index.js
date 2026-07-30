@@ -8,26 +8,10 @@ const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 const app = express();
 const upload = multer({ dest: os.tmpdir() });
 
-// Создаём fonts.conf, который будет искать шрифты в /app (где лежит TT.ttf)
-function createFontsConfig(fontDir) {
-  return `<?xml version="1.0"?>
-<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
-<fontconfig>
-  <dir>${fontDir}</dir>
-  <cachedir>/tmp/fonts-cache</cachedir>
-  <config>
-    <rescan>
-      <int>30</int>
-    </rescan>
-  </config>
-</fontconfig>`;
-}
-
 app.get('/', (req, res) => res.send('FFmpeg service is running'));
 
 app.post('/process', upload.fields([
-  { name: 'video', maxCount: 1 },
-  { name: 'srt', maxCount: 1 }
+  { name: 'video', maxCount: 1 }
 ]), (req, res) => {
   try {
     const videoFile = req.files?.video?.[0];
@@ -35,26 +19,9 @@ app.post('/process', upload.fields([
 
     const inputPath = videoFile.path;
     const outputPath = path.join(os.tmpdir(), 'output.mp4');
-    let srtPath = null;
 
-    if (req.files?.srt?.[0]) {
-      srtPath = req.files.srt[0].path;
-    } else if (req.body?.srt_text) {
-      srtPath = path.join(os.tmpdir(), 'subs.srt');
-      fs.writeFileSync(srtPath, req.body.srt_text, 'utf-8');
-    }
-
-    let vf = 'hflip,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2';
-
-    let fontsConfPath = null;
-    if (srtPath) {
-      const fontDir = path.dirname('/app/TT.ttf');
-      const fontsConfContent = createFontsConfig(fontDir);
-      fontsConfPath = path.join(os.tmpdir(), 'fonts.conf');
-      fs.writeFileSync(fontsConfPath, fontsConfContent);
-
-      vf += `,subtitles=${srtPath}:force_style='Fontsize=22,PrimaryColour=&HFFFFFF&,Alignment=2,MarginV=40'`;
-    }
+    // Только зеркалирование и масштабирование под Shorts
+    const vf = 'hflip,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2';
 
     const args = [
       '-y', '-i', inputPath,
@@ -66,19 +33,10 @@ app.post('/process', upload.fields([
       outputPath
     ];
 
-    // Готовим окружение: указываем FONTCONFIG_PATH на /tmp, где лежит fonts.conf
-    const env = { ...process.env };
-    if (fontsConfPath) {
-      env.FONTCONFIG_PATH = os.tmpdir();   // /tmp
-    }
-
     console.log('FFmpeg command:', args.join(' '));
 
-    execFile(ffmpegPath, args, { timeout: 120000, env }, (err, stdout, stderr) => {
-      // Очистка временных файлов
+    execFile(ffmpegPath, args, { timeout: 120000 }, (err, stdout, stderr) => {
       fs.unlink(inputPath, () => {});
-      if (srtPath && srtPath !== (req.files?.srt?.[0]?.path)) fs.unlink(srtPath, () => {});
-      if (fontsConfPath) fs.unlink(fontsConfPath, () => {});
 
       if (err) {
         console.error('FFmpeg error:', stderr);
