@@ -33,18 +33,8 @@ app.post('/process', upload.fields([
     fs.writeFileSync(srtPath, req.body.srt_text, 'utf-8');
   }
 
-  let vf = 'hflip,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2';
-if (srtPath) {
-  let fontParam = '';
-  if (req.files?.font?.[0]) {
-    // Если шрифт прислан как файл, используем его временный путь
-    const fontPath = req.files.font[0].path;
-    fontParam = `,Fontfile=${fontPath}`;
-  } else if (req.body?.fontfile) {
-    // Если передан путь к уже существующему в контейнере шрифту (например, /app/DejaVuSans.ttf)
-    fontParam = `,Fontfile=${req.body.fontfile}`;
-  }
-  vf += `,subtitles=${srtPath}:force_style='Fontsize=20,PrimaryColour=&H00FFFF&${fontParam}'`;
+  if (srtPath) {
+  vf += `,subtitles=${srtPath}:force_style='Fontsize=20,PrimaryColour=&H00FFFF&,Fontfile=/app/TT.ttf'`;
 }
 
   console.log('body keys:', Object.keys(req.body));
