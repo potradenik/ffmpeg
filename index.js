@@ -33,6 +33,10 @@ app.post('/process', upload.fields([
   }
 
   let vf = 'hflip,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2';
+
+  console.log('body keys:', Object.keys(req.body));
+console.log('srt_text:', req.body?.srt_text?.substring(0, 100)); // первые 100 символов
+  
   if (srtPath) {
     vf += `,subtitles=${srtPath}:force_style='Fontsize=20,PrimaryColour=&H00FFFF&'`;
   }
