@@ -8,34 +8,22 @@ const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 const app = express();
 const upload = multer({ dest: os.tmpdir() });
 
+// Создаём виртуальный fonts.conf, который заставит fontconfig искать шрифты только в указанной папке
+function createFontsConfig(fontDir) {
+  return `<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <dir>${fontDir}</dir>
+  <cachedir>/tmp/fonts-cache</cachedir>
+  <config>
+    <rescan>
+      <int>30</int>
+    </rescan>
+  </config>
+</fontconfig>`;
+}
+
 app.get('/', (req, res) => res.send('FFmpeg service is running'));
-
-// Функция парсинга SRT в массив субтитров
-function parseSRT(srtText) {
-  const blocks = srtText.trim().split(/\n\n+/);
-  const subtitles = [];
-  for (const block of blocks) {
-    const lines = block.split('\n');
-    if (lines.length >= 3) {
-      const timeLine = lines[1];
-      const match = timeLine.match(/(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})/);
-      if (match) {
-        const start = match[1];
-        const end = match[2];
-        const text = lines.slice(2).join(' ').replace(/'/g, "'\\''");
-        subtitles.push({ start, end, text });
-      }
-    }
-  }
-  return subtitles;
-}
-
-// Конвертация времени SRT в секунды
-function srtTimeToSeconds(timeStr) {
-  const [h, m, sec] = timeStr.split(':');
-  const [s, ms] = sec.split(',');
-  return parseInt(h) * 3600 + parseInt(m) * 60 + parseInt(s) + parseInt(ms) / 1000;
-}
 
 app.post('/process', upload.fields([
   { name: 'video', maxCount: 1 },
@@ -47,43 +35,29 @@ app.post('/process', upload.fields([
 
     const inputPath = videoFile.path;
     const outputPath = path.join(os.tmpdir(), 'output.mp4');
-    let srtText = null;
+    let srtPath = null;
 
-    // Получаем SRT текст
+    // Получаем субтитры (либо файл, либо текст)
     if (req.files?.srt?.[0]) {
-      srtText = fs.readFileSync(req.files.srt[0].path, 'utf-8');
+      srtPath = req.files.srt[0].path;
     } else if (req.body?.srt_text) {
-      srtText = req.body.srt_text;
+      srtPath = path.join(os.tmpdir(), 'subs.srt');
+      fs.writeFileSync(srtPath, req.body.srt_text, 'utf-8');
     }
 
-    // Базовый фильтр
+    // Базовый фильтр зеркалирования и масштабирования
     let vf = 'hflip,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2';
 
-    // Если есть субтитры, добавляем drawtext
-    if (srtText) {
-      const fontPath = '/app/TT.ttf';
-      if (!fs.existsSync(fontPath)) {
-        return res.status(500).json({ error: 'Font file not found', path: fontPath });
-      }
+    // Готовим временный fonts.conf, если есть субтитры
+    let fontsConfPath = null;
+    if (srtPath) {
+      const fontDir = path.dirname('/app/TT.ttf'); // /app
+      const fontsConfContent = createFontsConfig(fontDir);
+      fontsConfPath = path.join(os.tmpdir(), 'fonts.conf');
+      fs.writeFileSync(fontsConfPath, fontsConfContent);
 
-      const subtitles = parseSRT(srtText);
-      if (subtitles.length === 0) {
-        return res.status(400).json({ error: 'No valid subtitles found in SRT' });
-      }
-
-      // Строим фильтры drawtext для каждой реплики
-      const drawtextFilters = subtitles.map(sub => {
-        const startSec = srtTimeToSeconds(sub.start);
-        const endSec = srtTimeToSeconds(sub.end);
-        // Экранируем двоеточия и другие спецсимволы для параметров фильтра
-        const escapedText = sub.text
-          .replace(/\\/g, '\\\\')
-          .replace(/:/g, '\\:')
-          .replace(/'/g, "'\\''");
-        return `drawtext=fontfile='${fontPath}':text='${escapedText}':fontsize=20:fontcolor=Yellow:enable='between(t,${startSec},${endSec})'`;
-      });
-
-      vf += ',' + drawtextFilters.join(',');
+      // 👇 ВАША СТРОКА С НАСТРОЙКАМИ СУБТИТРОВ 👇
+      vf += `,subtitles=${srtPath}:force_style='Fontsize=22,PrimaryColour=&HFFFFFF&,Alignment=2,MarginV=40'`;
     }
 
     const args = [
@@ -96,11 +70,18 @@ app.post('/process', upload.fields([
       outputPath
     ];
 
-    console.log('FFmpeg args:', args.join(' '));
+    // Копируем fonts.conf в /etc/fonts/local.conf, чтобы fontconfig его увидел
+    if (fontsConfPath) {
+      fs.copyFileSync(fontsConfPath, '/etc/fonts/local.conf');
+    }
+
+    console.log('FFmpeg command:', args.join(' '));
 
     execFile(ffmpegPath, args, { timeout: 120000 }, (err, stdout, stderr) => {
+      // Очистка временных файлов
       fs.unlink(inputPath, () => {});
-      if (srtText && req.files?.srt?.[0]) fs.unlink(req.files.srt[0].path, () => {});
+      if (srtPath && srtPath !== (req.files?.srt?.[0]?.path)) fs.unlink(srtPath, () => {});
+      if (fontsConfPath) fs.unlink(fontsConfPath, () => {});
 
       if (err) {
         console.error('FFmpeg error:', stderr);
@@ -119,22 +100,3 @@ app.post('/process', upload.fields([
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server on port ${PORT}`));
-
-app.get('/test-font', (req, res) => {
-  const fontPath = '/app/TT.ttf';
-  const outputPath = path.join(os.tmpdir(), 'test.mp4');
-  const vf = `drawtext=fontfile='${fontPath}':text='TEST':fontsize=40:fontcolor=red:x=10:y=10`;
-
-  const args = [
-    '-f', 'lavfi', '-i', 'color=c=black:s=320x240:d=5',
-    '-vf', vf,
-    '-t', '5', outputPath
-  ];
-
-  execFile(ffmpegPath, args, { timeout: 10000 }, (err, stdout, stderr) => {
-    if (err) {
-      return res.status(500).json({ error: 'Test failed', stderr: stderr.slice(-300) });
-    }
-    res.sendFile(outputPath, () => fs.unlink(outputPath, () => {}));
-  });
-});
